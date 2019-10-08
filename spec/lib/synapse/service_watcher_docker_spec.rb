@@ -1,13 +1,21 @@
 require 'spec_helper'
+require 'synapse/service_watcher/docker'
 
-class Synapse::DockerWatcher
+class Synapse::ServiceWatcher::DockerWatcher
   attr_reader :check_interval, :watcher, :synapse
   attr_accessor :default_servers
 end
 
-describe Synapse::DockerWatcher do
-  let(:mocksynapse) { double() }
-  subject { Synapse::DockerWatcher.new(testargs, mocksynapse) }
+describe Synapse::ServiceWatcher::DockerWatcher do
+  let(:mocksynapse) do
+    mock_synapse = instance_double(Synapse::Synapse)
+    mockgenerator = Synapse::ConfigGenerator::BaseGenerator.new()
+    allow(mock_synapse).to receive(:available_generators).and_return({
+      'haproxy' => mockgenerator
+    })
+    mock_synapse
+  end
+  subject { Synapse::ServiceWatcher::DockerWatcher.new(testargs, mocksynapse) }
   let(:testargs) { { 'name' => 'foo', 'discovery' => { 'method' => 'docker', 'servers' => [{'host' => 'server1.local', 'name' => 'mainserver'}], 'image_name' => 'mycool/image', 'container_port' => 6379 }, 'haproxy' => {} }}
   before(:each) do
     allow(subject.log).to receive(:warn)
@@ -84,9 +92,9 @@ describe Synapse::DockerWatcher do
     it('has a sane uri') { subject.send(:containers); expect(Docker.url).to eql('http://server1.local:4243') }
 
     context 'old style port mappings' do
+      let(:docker_data) { [{"Ports" => "0.0.0.0:49153->6379/tcp, 0.0.0.0:49154->6390/tcp", "Image" => "mycool/image:tagname"}] }
       context 'works for one container' do
-        let(:docker_data) { [{"Ports" => "0.0.0.0:49153->6379/tcp, 0.0.0.0:49154->6390/tcp", "Image" => "mycool/image:tagname"}] }
-        it do 
+        it do
           expect(Docker::Util).to receive(:parse_json).and_return(docker_data)
           expect(subject.send(:containers)).to eql([{"name"=>"mainserver", "host"=>"server1.local", "port"=>"49153"}])
          end
@@ -106,6 +114,12 @@ describe Synapse::DockerWatcher do
         expect(Docker::Util).to receive(:parse_json).and_return(docker_data)
         expect(subject.send(:containers)).to eql([{"name"=>"mainserver", "host"=>"server1.local", "port"=>"49153"}])
       end
+
+      it 'filters out containers with unmapped ports' do
+        test_docker_data = docker_data + [{"Ports" => [{'PrivatePort' => 6379}], "Image" => "mycool/image:unmapped"}]
+        expect(Docker::Util).to receive(:parse_json).and_return(test_docker_data)
+        expect(subject.send(:containers)).to eql([{"name"=>"mainserver", "host"=>"server1.local", "port"=>"49153"}])
+      end
     end
 
     context 'filters out wrong images' do
@@ -117,4 +131,3 @@ describe Synapse::DockerWatcher do
     end
   end
 end
-

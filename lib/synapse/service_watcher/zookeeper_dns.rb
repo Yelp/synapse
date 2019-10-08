@@ -19,7 +19,7 @@ require 'thread'
 # for messages indicating that new servers are available, the check interval
 # has passed (triggering a re-resolve), or that the watcher should shut down.
 # The DNS watcher is responsible for the actual reconfiguring of backends.
-module Synapse
+class Synapse::ServiceWatcher
   class ZookeeperDnsWatcher < BaseWatcher
 
     # Valid messages that can be passed through the internal message queue
@@ -46,13 +46,14 @@ module Synapse
       CHECK_INTERVAL_MESSAGE = CheckInterval.new
     end
 
-    class Dns < Synapse::DnsWatcher
+    class Dns < Synapse::ServiceWatcher::DnsWatcher
 
       # Overrides the discovery_servers method on the parent class
       attr_accessor :discovery_servers
 
-      def initialize(opts={}, synapse, message_queue)
+      def initialize(opts={}, parent=nil, synapse, message_queue)
         @message_queue = message_queue
+        @parent = parent
 
         super(opts, synapse)
       end
@@ -94,6 +95,11 @@ module Synapse
             unless last_resolution == current_resolution
               last_resolution = current_resolution
               configure_backends(last_resolution)
+
+              # Propagate revision updates down to ZookeeperDnsWatcher, so
+              # that stanza cache can work properly.
+              @revision += 1
+              @parent.reconfigure! unless @parent.nil?
             end
           end
         end
@@ -106,11 +112,12 @@ module Synapse
       end
     end
 
-    class Zookeeper < Synapse::ZookeeperWatcher
-      def initialize(opts={}, synapse, message_queue)
+    class Zookeeper < Synapse::ServiceWatcher::ZookeeperWatcher
+      def initialize(opts={}, parent=nil, synapse, message_queue)
         super(opts, synapse)
 
         @message_queue = message_queue
+        @parent = parent
       end
 
       # Overrides reconfigure! to cause the new list of servers to be messaged
@@ -118,6 +125,10 @@ module Synapse
       def reconfigure!
         # push the new backends onto the queue
         @message_queue.push(Messages::NewServers.new(@backends))
+        # Propagate revision updates down to ZookeeperDnsWatcher, so
+        # that stanza cache can work properly.
+        @revision += 1
+        @parent.reconfigure! unless @parent.nil?
       end
 
       private
@@ -129,11 +140,11 @@ module Synapse
 
     def start
       dns_discovery_opts = @discovery.select do |k,_|
-        k == 'nameserver'
+        k == 'nameserver' || k == 'label_filter'
       end
 
       zookeeper_discovery_opts = @discovery.select do |k,_|
-        k == 'hosts' || k == 'path'
+        k == 'hosts' || k == 'path' || k == 'label_filter'
       end
 
       @check_interval = @discovery['check_interval'] || 30.0
@@ -142,12 +153,14 @@ module Synapse
 
       @dns = Dns.new(
         mk_child_watcher_opts(dns_discovery_opts),
+        self,
         @synapse,
         @message_queue
       )
 
       @zk = Zookeeper.new(
         mk_child_watcher_opts(zookeeper_discovery_opts),
+        self,
         @synapse,
         @message_queue
       )
@@ -186,6 +199,12 @@ module Synapse
       @dns.backends
     end
 
+    # Override reconfigure! as this class should not explicitly reconfigure
+    # synapse
+    def reconfigure!
+      @revision += 1
+    end
+
     private
 
     def validate_discovery_opts
@@ -218,15 +237,9 @@ module Synapse
     def mk_child_watcher_opts(discovery_opts)
       {
         'name' => @name,
-        'haproxy' => @haproxy,
         'discovery' => discovery_opts,
         'default_servers' => @default_servers,
       }
-    end
-
-    # Override reconfigure! as this class should not explicitly reconfigure
-    # synapse
-    def reconfigure!
     end
   end
 end

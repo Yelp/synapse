@@ -3,7 +3,7 @@ require "synapse/service_watcher/base"
 require 'thread'
 require 'resolv'
 
-module Synapse
+class Synapse::ServiceWatcher
   class DnsWatcher < BaseWatcher
     def start
       @check_interval = @discovery['check_interval'] || 30.0
@@ -59,10 +59,16 @@ module Synapse
       end
     end
 
+    IP_REGEX = Regexp.union([Resolv::IPv4::Regex, Resolv::IPv6::Regex])
+
     def resolve_servers
       resolver.tap do |dns|
         resolution = discovery_servers.map do |server|
-          addresses = dns.getaddresses(server['host']).map(&:to_s)
+          if server['host'] =~ IP_REGEX
+            addresses = [server['host']]
+          else
+            addresses = dns.getaddresses(server['host']).map(&:to_s)
+          end
           [server, addresses.sort]
         end
 
@@ -85,6 +91,7 @@ module Synapse
             'host' => address,
             'port' => server['port'],
             'name' => server['name'],
+            'labels' => server['labels'],
           }
         end
       end

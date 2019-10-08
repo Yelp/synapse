@@ -1,7 +1,7 @@
 require "synapse/service_watcher/base"
 require 'docker'
 
-module Synapse
+class Synapse::ServiceWatcher
   class DockerWatcher < BaseWatcher
     def start
       @check_interval = @discovery['check_interval'] || 15.0
@@ -74,10 +74,11 @@ module Synapse
         cnts.each do |cnt|
           cnt['Ports'] = rewrite_container_ports cnt['Ports']
         end
-        # Discover containers that match the image/port we're interested in
+        # Discover containers that match the image/port we're interested in and have the port mapped to the host
         cnts = cnts.find_all do |cnt|
           cnt["Image"].rpartition(":").first == @discovery["image_name"] \
-            and cnt["Ports"].has_key?(@discovery["container_port"].to_s())
+            and cnt["Ports"].has_key?(@discovery["container_port"].to_s()) \
+            and cnt["Ports"][@discovery["container_port"].to_s()].length > 0
         end
         cnts.map do |cnt|
           {

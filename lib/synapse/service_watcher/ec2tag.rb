@@ -1,8 +1,8 @@
 require 'synapse/service_watcher/base'
 require 'aws-sdk'
 
-module Synapse
-  class EC2Watcher < BaseWatcher
+class Synapse::ServiceWatcher
+  class Ec2tagWatcher < BaseWatcher
 
     attr_reader :check_interval
 
@@ -36,20 +36,19 @@ module Synapse
 
       # As we're only looking up instances with hostnames/IPs, need to
       # be explicitly told which port the service we're balancing for listens on.
-      unless @haproxy['server_port_override']
+      unless @backend_port_override
         raise ArgumentError,
-          "Missing server_port_override for service #{@name} - which port are backends listening on?"
+          "Missing backend_port_override for service #{@name} - which port are backends listening on?"
       end
 
-      unless @haproxy['server_port_override'].match(/^\d+$/)
-        raise ArgumentError, "Invalid server_port_override value"
+      # aws region is optional in the SDK, aws will use a default value if not provided
+      unless @discovery['aws_region'] || ENV['AWS_REGION']
+        log.info "aws region is missing, will use default"
       end
-
-      # Required, but can use well-known environment variables.
-      %w[aws_access_key_id aws_secret_access_key aws_region].each do |attr|
-        unless (@discovery[attr] || ENV[attr.upcase])
-          raise ArgumentError, "Missing #{attr} option or #{attr.upcase} environment variable"
-        end
+      # access key id & secret are optional, might be using IAM instance profile for credentials
+      unless ((@discovery['aws_access_key_id'] || ENV['aws_access_key_id']) \
+              && (@discovery['aws_secret_access_key'] || ENV['aws_secret_access_key'] ))
+        log.info "aws access key id & secret not set in config or env variables for service #{name}, will attempt to use IAM instance profile"
       end
     end
 
@@ -60,10 +59,11 @@ module Synapse
           if set_backends(discover_instances)
             log.info "synapse: ec2tag watcher backends have changed."
           end
-          sleep_until_next_check(start)
         rescue Exception => e
           log.warn "synapse: error in ec2tag watcher thread: #{e.inspect}"
           log.warn e.backtrace
+        ensure
+          sleep_until_next_check(start)
         end
       end
 
@@ -89,7 +89,6 @@ module Synapse
           new_backends << {
             'name' => instance.private_dns_name,
             'host' => instance.private_ip_address,
-            'port' => @haproxy['server_port_override'],
           }
         end
 
